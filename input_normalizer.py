@@ -1,18 +1,15 @@
-# PDF/image → NormalizedPage
+"""input_normalizer.py – PDF/image → NormalizedPage with square padding.
 
-"""input_normalizer.py – turn any supported input into a NormalizedPage.
+The rendered raster is padded to a centered square at extraction time.
+Gemini receives a perfect square, and the padding metadata is stored on
+the page so the vision parser can reverse it exactly.
 
-Supported inputs:
-  * vector PDF   (has useful native text spans)
-  * raster PDF   (little/no native text — will be rendered)
-  * image file   (PNG / JPG / JPEG / WebP / BMP / TIFF)
-
-Coordinate system contract
---------------------------
-Every downstream component (vector source, vision source, merger, bubble
-engine) works in "page points".  For a PDF that is the PDF user-space unit
-(1/72 inch).  For an image we treat 1 pixel == 1 point; the final pixel
-mapping in pipeline_adapter.py handles the scaling.
+Coordinate contract:
+  * page.width_pt / height_pt = PDF content size (points)
+  * page.content_w / content_h = unpadded raster size (pixels)
+  * page.pad_left / pad_top = padding offset (pixels)
+  * page.square_side = padded canvas side (pixels)
+  * page.image = the PADDED SQUARE (for vision only — not for display)
 """
 from __future__ import annotations
 
@@ -28,21 +25,49 @@ from PIL import Image, ImageOps
 
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
+_PAD_COLOR = (255, 255, 255)
+
+
+def _pad_to_square(img: Image.Image):
+    """Return (square, pad_left, pad_top, content_w, content_h, side)."""
+    if img.mode != "RGB":
+        img = img.convert("RGB")
+    W, H = img.size
+    side = max(W, H)
+    if W == H:
+        return img, 0, 0, W, H, side
+    square = Image.new("RGB", (side, side), _PAD_COLOR)
+    pad_left = (side - W) // 2
+    pad_top = (side - H) // 2
+    square.paste(img, (pad_left, pad_top))
+    return square, pad_left, pad_top, W, H, side
 
 
 @dataclass
 class NormalizedPage:
     source_path: Path
     kind: str                          # "pdf" | "image"
-    page_num: int                      # 0-based; 0 for images
+    page_num: int
     page_count: int
-    width_pt: float
-    height_pt: float
-    image: Image.Image                 # rendered raster for vision
-    image_dpi: int                     # effective DPI of `image`
+    width_pt: float                    # PDF content width (points)
+    height_pt: float                   # PDF content height (points)
+    image: Image.Image                 # PADDED SQUARE (for vision)
+    image_dpi: int
     pdf_doc: "fitz.Document | None" = None
     vector_span_count: int = 0
     has_vector_text: bool = False
+    # --- padding metadata (exact) ---
+    pad_left: int = 0                  # pixels padded on the left
+    pad_top: int = 0                   # pixels padded on the top
+    content_w: int = 0                 # unpadded content width (pixels)
+    content_h: int = 0                 # unpadded content height (pixels)
+    square_side: int = 0               # padded canvas side (pixels)
+
+    @property
+    def content_size(self) -> tuple[int, int]:
+        """Unpadded raster size — use this for display scale factors."""
+        return (self.content_w or self.image.size[0],
+                self.content_h or self.image.size[1])
 
     def close(self):
         if self.pdf_doc is not None:
@@ -88,7 +113,8 @@ def normalize_pdf(path: Path, page_num: int | None, vision_dpi: int,
     page = doc[page_num]
     rect = page.rect
     spans = _count_text_spans(doc, page_num)
-    image = _render_pdf_page(doc, page_num, vision_dpi)
+    raw = _render_pdf_page(doc, page_num, vision_dpi)
+    square, pl, pt, cw, ch, sd = _pad_to_square(raw)
     return NormalizedPage(
         source_path=path,
         kind="pdf",
@@ -96,11 +122,13 @@ def normalize_pdf(path: Path, page_num: int | None, vision_dpi: int,
         page_count=len(doc),
         width_pt=float(rect.width),
         height_pt=float(rect.height),
-        image=image,
+        image=square,
         image_dpi=vision_dpi,
         pdf_doc=doc,
         vector_span_count=spans,
         has_vector_text=spans >= vector_min_spans,
+        pad_left=pl, pad_top=pt,
+        content_w=cw, content_h=ch, square_side=sd,
     )
 
 
@@ -113,19 +141,22 @@ def normalize_image(path: Path) -> NormalizedPage:
         img = ImageOps.exif_transpose(img)
     except Exception:
         pass
-    w, h = img.size
+    W, H = img.size
+    square, pl, pt, cw, ch, sd = _pad_to_square(img)
     return NormalizedPage(
         source_path=path,
         kind="image",
         page_num=0,
         page_count=1,
-        width_pt=float(w),
-        height_pt=float(h),
-        image=img,
+        width_pt=float(W),          # 1 pixel = 1 point for images
+        height_pt=float(H),
+        image=square,
         image_dpi=72,
         pdf_doc=None,
         vector_span_count=0,
         has_vector_text=False,
+        pad_left=pl, pad_top=pt,
+        content_w=cw, content_h=ch, square_side=sd,
     )
 
 

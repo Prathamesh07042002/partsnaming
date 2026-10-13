@@ -32,8 +32,8 @@ from openpyxl.cell.cell import MergedCell
 _ILLEGAL_XLSX = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 BLUE = (32, 91, 177)
-BUBBLE_RADIUS = 22
-BUBBLE_OFFSET = 16
+BUBBLE_RADIUS = 55
+BUBBLE_OFFSET = 30
 
 # Junk filter used ONLY by the OCR fallback path.
 RE_JUNK_OCR = re.compile(
@@ -137,7 +137,8 @@ def _dedupe(items):
     return out
 
 
-def _spread(items, min_distance=44.0, width=0, height=0, iterations=200):
+
+def _spread(items, min_distance=115.0, width=0, height=0, iterations=200):
     """Push bubble centres apart so they do not overlap."""
     n = len(items)
     if n < 2:
@@ -249,7 +250,7 @@ def pdf_draft(pdf_path: Path, page_num: int | None = None, target_size=None):
         })
 
     items = _dedupe(items)
-    _spread(items, min_distance=44.0, width=img_w, height=img_h)
+    _spread(items, min_distance=115.0, width=img_w, height=img_h)
     return items, (img_w, img_h)
 
 
@@ -324,7 +325,7 @@ def ocr_draft(image_path: Path):
         })
 
     items = _dedupe(items)
-    _spread(items, min_distance=44.0, width=w, height=h)
+    _spread(items, min_distance=115.0, width=w, height=h)
     return items
 
 
@@ -541,7 +542,7 @@ def annotate(image_path, items, output_path):
     image = Image.open(image_path).convert("RGB")
     draw = ImageDraw.Draw(image)
     try:
-        font = ImageFont.truetype("arial.ttf", 16)
+        font = ImageFont.truetype("arial.ttf", 34)
     except OSError:
         font = ImageFont.load_default()
     radius = BUBBLE_RADIUS

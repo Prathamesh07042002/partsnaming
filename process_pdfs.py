@@ -76,8 +76,8 @@ def render_source_image(path: Path, fitz_page: int, out_png: Path) -> bool:
 def process_one(path: Path, root: Path, page_override: int, force: bool):
     part = path.stem
     out_dir = root / "outputs" / part
-    annotated = out_dir / "annotated_drawing.png"
-    excel = out_dir / "extracted_dimensions.xlsx"
+    annotated = out_dir / f"{part}.png"
+    excel = out_dir / f"{part}.xlsx"
     reviewed_path = root / "reviewed_items" / f"{part}.json"
 
     if not force and annotated.exists() and excel.exists():
@@ -128,7 +128,7 @@ def process_one(path: Path, root: Path, page_override: int, force: bool):
         cn.write_excel(items, excel, image)
         cn.annotate(image, items, annotated)
 
-        (out_dir / "extracted_candidates.json").write_text(
+        (out_dir / f"{part}.json").write_text(
             json.dumps(items, indent=2), encoding="utf-8"
         )
 
@@ -145,6 +145,8 @@ def main():
     )
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--page", type=int, default=0)
+    parser.add_argument("--only", type=str, default="",
+                help="Process only this file stem (e.g. 550629507102)")
     args = parser.parse_args()
 
     root = args.input_dir.resolve()
@@ -166,6 +168,8 @@ def main():
         return not any(tok in low for tok in _EXCLUDE_TOKENS)
 
     files = sorted(p for p in root.iterdir() if _is_source_file(p))
+    if args.only:
+        files = [f for f in files if f.stem == args.only]
     if not files:
         print(f"No PDF/image files found in {root}")
         return 0

@@ -89,7 +89,7 @@ def dump(pdf_path, page_num=None, out_dir=None, dpi=150):
     img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
     draw = ImageDraw.Draw(img)
     try:
-        font = ImageFont.truetype("arial.ttf", 12)
+        font = ImageFont.truetype("arial.ttf", 34)
     except OSError:
         font = ImageFont.load_default()
 

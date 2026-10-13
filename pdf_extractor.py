@@ -846,8 +846,9 @@ def _ocr_fallback(page, page_rect, drawings, tb_region, drawing_region,
         cy = (by1 + by2) / 2
         if _is_dup_of_native(cx, cy, t, native_mids):
             return None
-        arrow = _nearest_arrowhead(bbox_pdf, arrows, max_dist=25.0)
-        ax, ay = (arrow if arrow else (cx, cy))
+        
+        ax, ay = cx, cy
+        
         return {
             "text": t,
             "bbox": bbox_pdf,
@@ -1061,11 +1062,10 @@ def extract_pdf_candidates(pdf_path, page_num=None, debug_png=None):
                 stats["rejected_non_dim"] += 1
                 continue
 
-            arrow = _nearest_arrowhead((x1, y1, x2, y2), arrows, max_dist=25.0)
-            if arrow:
-                ax, ay = arrow
-            else:
-                ax, ay = cx, cy
+            # Point at the dimension text, not the arrowhead (arrowheads
+            # on Tata drawings are dimension-line arrows sitting on the
+            # shape outline, not leader-line arrowheads).
+            ax, ay = cx, cy
 
             candidates.append({
                 "text": text,
@@ -1181,7 +1181,7 @@ def render_debug_png(pdf_path, candidates, output_path, page_num=None, dpi=150):
 
     draw = ImageDraw.Draw(img)
     try:
-        font = ImageFont.truetype("arial.ttf", 14)
+        font = ImageFont.truetype("arial.ttf", 34)
     except OSError:
         font = ImageFont.load_default()
 
@@ -1192,7 +1192,7 @@ def render_debug_png(pdf_path, candidates, output_path, page_num=None, dpi=150):
         py2 = int(cand["bbox"][3] * scale)
         colour = (255, 140, 0) if cand.get("source") == "ocr" else (255, 0, 0)
         draw.rectangle([px1, py1, px2, py2], outline=colour, width=2)
-        draw.text((px1, max(0, py1 - 16)),
+        draw.text((px1, max(0, py1 - 34)),
                   f"{i}:{cand['text'][:18]}", fill=colour, font=font)
 
         ax = int(cand.get("anchor_x", (cand["bbox"][0] + cand["bbox"][2]) / 2) * scale)

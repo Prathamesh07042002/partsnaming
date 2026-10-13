@@ -1,4 +1,4 @@
-"""pipeline_adapter.py – glue between the new extraction pipeline and the
+"""pipeline_adapter.py - glue between the new extraction pipeline and the
 existing bubbling engine in clockwise_numbering.py.
 
 The bubble engine consumes `items` with pixel coordinates.  This module
@@ -78,7 +78,7 @@ def pipeline_draft(input_path: Path, page_num: int | None = None,
         if target_size:
             img_w, img_h = int(target_size[0]), int(target_size[1])
         else:
-            img_w, img_h = page.image.size
+            img_w, img_h = page.content_size
 
         if img_w < 2 or img_h < 2:
             raise ValueError(f"Image too small: {img_w}x{img_h}")
@@ -133,7 +133,7 @@ def pipeline_draft(input_path: Path, page_num: int | None = None,
                  len(items), skipped)
 
         items = cn._dedupe(items)
-        cn._spread(items, min_distance=44.0, width=img_w, height=img_h)
+        cn._spread(items, min_distance=115.0, width=img_w, height=img_h)
         return items, (img_w, img_h)
     finally:
         page.close()

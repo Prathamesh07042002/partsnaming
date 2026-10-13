@@ -1,4 +1,4 @@
-"""extraction_pipeline.py – orchestrator (vector + vision + merge)."""
+"""extraction_pipeline.py - orchestrator (vector + vision + merge)."""
 from __future__ import annotations
 
 import logging
@@ -52,6 +52,13 @@ def _vision_candidates(page, settings):
             page_width_pt=page.width_pt,
             page_height_pt=page.height_pt,
             page_num=page.page_num,
+            context={
+                "pad_left":    page.pad_left,
+                "pad_top":     page.pad_top,
+                "content_w":   page.content_w,
+                "content_h":   page.content_h,
+                "square_side": page.square_side,
+            },
         )
         log.info("Vision source (%s): %d candidates",
                  client.provider_name, len(cands))
@@ -79,15 +86,51 @@ def extract_for_page(input_path: Path, page_num=None,
         page.kind, page.page_num, page.width_pt, page.height_pt,
         page.vector_span_count, page.has_vector_text,
     )
-
+    log.info("Padding: content=%dx%d → square=%d (offset %d, %d)",
+             page.content_w, page.content_h, page.square_side,
+             page.pad_left, page.pad_top)
+    # mode = settings.extraction_mode
+    # if mode not in ("vector_first", "vision_first", "hybrid"):
+    #     log.warning("Unknown EXTRACTION_MODE=%r — defaulting to hybrid", mode)
+    #     mode = "hybrid"
     mode = settings.extraction_mode
-    if mode not in ("vector_first", "vision_first", "hybrid"):
+    if mode not in ("vector_first", "vision_first", "hybrid", "vision_only"):
         log.warning("Unknown EXTRACTION_MODE=%r — defaulting to hybrid", mode)
         mode = "hybrid"
 
     vector_cands, vision_cands = [], []
 
-    if mode == "vector_first":
+    # if mode == "vector_first":
+    #     vector_cands = _vector_candidates(page)
+    #     if page.kind == "image" or not vector_cands:
+    #         vision_cands = _vision_candidates(page, settings)
+    # elif mode == "vision_first":
+    #     vision_cands = _vision_candidates(page, settings)
+    #     if page.kind == "pdf":
+    #         vector_cands = _vector_candidates(page)
+    # else:
+    #     vector_cands = _vector_candidates(page)
+    #     vision_cands = _vision_candidates(page, settings)
+    # if mode == "vision_only":
+    #     # Skip vector entirely — pure Gemini run for diagnosis.
+    #     log.info("vision_only: vector source disabled")
+    #     vision_cands = _vision_candidates(page, settings)
+    # elif mode == "vector_first":
+    #     vector_cands = _vector_candidates(page)
+    #     if page.kind == "image" or not vector_cands:
+    #         vision_cands = _vision_candidates(page, settings)
+    # elif mode == "vision_first":
+    #     vision_cands = _vision_candidates(page, settings)
+    #     if page.kind == "pdf":
+    #         vector_cands = _vector_candidates(page)
+    # else:
+    #     vector_cands = _vector_candidates(page)
+    #     vision_cands = _vision_candidates(page, settings)
+    if mode == "vision_only":
+        # Skip vector entirely — pure Gemini run for diagnosis.
+        log.info("vision_only: vector source disabled")
+        vision_cands = _vision_candidates(page, settings)
+    elif mode == "vector_first":
         vector_cands = _vector_candidates(page)
         if page.kind == "image" or not vector_cands:
             vision_cands = _vision_candidates(page, settings)
@@ -98,7 +141,6 @@ def extract_for_page(input_path: Path, page_num=None,
     else:
         vector_cands = _vector_candidates(page)
         vision_cands = _vision_candidates(page, settings)
-
     # --- table-region detection on raw spans -----------------------------
     try:
         from pdf_extractor import extract_pdf_spans

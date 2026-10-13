@@ -1,4 +1,4 @@
-"""candidate_merger.py – deduplicate + merge candidates from multiple sources."""
+"""candidate_merger.py – deduplicate + merge candidates (TYP/REF aware)."""
 from __future__ import annotations
 
 import math
@@ -10,8 +10,6 @@ _SYMBOL_MAP = str.maketrans({
     "º": "°", "×": "x",
 })
 
-# TB field types that should merge on text match alone (position may
-# be imprecise from Gemini).
 _TB_MERGE_TYPES = {
     "material_description", "material_specification", "part_number",
     "envelope", "mass", "surface_protection",
@@ -20,8 +18,29 @@ _TB_MERGE_TYPES = {
 
 def _normalize_text(t: str) -> str:
     t = (t or "").strip().upper().translate(_SYMBOL_MAP)
+    # strip TYP/REF/typical markers
+    t = re.sub(r"\(TYP\)|\(REF\)|\(TYPICAL\)", "", t)
+    t = re.sub(r"\bTYP\b|\bREF\b|\bTYPICAL\b", "", t)
     t = re.sub(r"\s+", "", t)
     return t.replace(",", ".")
+
+
+def _numeric_core(t: str) -> str:
+    """Extract the leading numeric/symbol token, stripping TYP/REF/tolerance.
+
+    "34(TYP)"     → "34"
+    "R20(TYP)"    → "R20"
+    "379±0.5"     → "379"
+    "Ø10.5H11"    → "Ø10.5H11"
+    """
+    t = (t or "").strip().upper().translate(_SYMBOL_MAP)
+    t = re.sub(r"\(TYP\)|\(REF\)|\(TYPICAL\)", "", t)
+    t = re.sub(r"\bTYP\b|\bREF\b|\bTYPICAL\b", "", t)
+    t = t.strip()
+    m = re.match(r"^(.+?)\s*[±]\s*\d", t)
+    if m:
+        t = m.group(1)
+    return re.sub(r"\s+", "", t).strip()
 
 
 def _similar(a: str, b: str) -> float:
@@ -41,6 +60,19 @@ def _spatial_close(a, b, radius):
     ax, ay = _center(a["bbox"])
     bx, by = _center(b["bbox"])
     return math.hypot(ax - bx, ay - by) <= radius
+
+
+def _bbox_overlap_ratio(a, b) -> float:
+    ax1, ay1, ax2, ay2 = a
+    bx1, by1, bx2, by2 = b
+    ix1, iy1 = max(ax1, bx1), max(ay1, by1)
+    ix2, iy2 = min(ax2, bx2), min(ay2, by2)
+    if ix2 <= ix1 or iy2 <= iy1:
+        return 0.0
+    inter = (ix2 - ix1) * (iy2 - iy1)
+    area_a = max(1.0, (ax2 - ax1) * (ay2 - ay1))
+    area_b = max(1.0, (bx2 - bx1) * (by2 - by1))
+    return inter / min(area_a, area_b)
 
 
 def _source_rank(c):
@@ -63,13 +95,14 @@ def _combine(weaker: dict, stronger: dict) -> dict:
 
 
 def merge_candidates(vector_cands, vision_cands,
-                     spatial_radius_pt: float = 28.0,
+                     spatial_radius_pt: float = 60.0,
                      text_similarity: float = 0.82):
-    """Three-tier merge:
+    """Four-tier merge.
 
-    Tier A: bbox close + fuzzy text match       → same feature
-    Tier B: same TB type + exact text match     → same TB field
-            (position-agnostic — Gemini places TB fields imprecisely)
+    Tier A : spatial + fuzzy text
+    Tier B : same TB type + exact text
+    Tier C : bbox overlap + fuzzy text
+    Tier D : bbox overlap + same numeric core  (catches "34" vs "34(TYP)")
     """
     vlist = list(vector_cands or [])
     glist = list(vision_cands or [])
@@ -79,7 +112,7 @@ def merge_candidates(vector_cands, vision_cands,
     for g in glist:
         match_idx = -1
 
-        # --- Tier A: spatial + fuzzy text ---
+        # Tier A
         for i, v in enumerate(merged):
             if not _spatial_close(v, g, spatial_radius_pt):
                 continue
@@ -87,7 +120,7 @@ def merge_candidates(vector_cands, vision_cands,
                 match_idx = i
                 break
 
-        # --- Tier B: TB type + exact text (position-agnostic) ---
+        # Tier B — TB fields
         if match_idx < 0:
             g_type = (g.get("type") or "").lower()
             g_norm = _normalize_text(g.get("text", ""))
@@ -96,6 +129,27 @@ def merge_candidates(vector_cands, vision_cands,
                     if (v.get("type") or "").lower() != g_type:
                         continue
                     if _normalize_text(v.get("text", "")) == g_norm:
+                        match_idx = i
+                        break
+
+        # Tier C — bbox overlap + fuzzy text
+        if match_idx < 0:
+            for i, v in enumerate(merged):
+                if _bbox_overlap_ratio(v["bbox"], g["bbox"]) < 0.40:
+                    continue
+                if _similar(v.get("text", ""), g.get("text", "")) >= text_similarity:
+                    match_idx = i
+                    break
+
+        # Tier D — bbox overlap + identical numeric core
+        if match_idx < 0:
+            g_core = _numeric_core(g.get("text", ""))
+            if g_core and len(g_core) >= 2:
+                for i, v in enumerate(merged):
+                    if _bbox_overlap_ratio(v["bbox"], g["bbox"]) < 0.30:
+                        continue
+                    v_core = _numeric_core(v.get("text", ""))
+                    if v_core and v_core == g_core:
                         match_idx = i
                         break
 

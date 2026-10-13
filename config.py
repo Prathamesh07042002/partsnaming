@@ -1,5 +1,5 @@
 # env loading + redacted summary
-"""config.py – centralized environment configuration.
+"""config.py - centralized environment configuration.
 
 Loads .env from project root (if present) and exposes the settings the
 extraction pipeline needs.  Never import this from libraries that need to

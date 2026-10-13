@@ -1,4 +1,4 @@
-"""candidate_filter.py – unified post-source filter with density rejection."""
+"""candidate_filter.py - unified post-source filter with density rejection."""
 from __future__ import annotations
 
 import math
