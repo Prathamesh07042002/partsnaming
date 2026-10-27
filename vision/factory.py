@@ -10,10 +10,6 @@ log = logging.getLogger(__name__)
 
 
 def build_vision_client(settings: Settings) -> VisionModelClient | None:
-    """Return a client for the configured provider, or None.
-
-    Unknown providers / missing API key → returns None and logs clearly.
-    """
     provider = (settings.provider or "").lower()
     if provider in ("", "none", "off"):
         log.info("Vision provider disabled (MODEL_PROVIDER=%r)", provider)
@@ -26,6 +22,17 @@ def build_vision_client(settings: Settings) -> VisionModelClient | None:
         )
         return None
 
+        # ----- Mistral (Pixtral VLM) -----
+    if provider == "mistral":
+        from vision.providers.mistral_client import MistralVLMClient
+        return MistralVLMClient(
+            api_key=settings.api_key,
+            model_name=settings.model_name,
+            timeout_s=settings.vision_timeout_s,
+            max_retries=settings.vision_max_retries,
+            use_annotation=settings.mistral_annotation,
+        )
+
     # ----- Groq (Qwen VL) -----
     if provider == "groq":
         from vision.providers.groq_client import GroqVisionClient
@@ -36,7 +43,7 @@ def build_vision_client(settings: Settings) -> VisionModelClient | None:
             max_retries=settings.vision_max_retries,
         )
 
-    # ----- Gemini (kept for future use) -----
+    # ----- Gemini (fallback) -----
     if provider == "gemini":
         from vision.providers.gemini_client import GeminiVisionClient
         return GeminiVisionClient(
@@ -45,12 +52,6 @@ def build_vision_client(settings: Settings) -> VisionModelClient | None:
             timeout_s=settings.vision_timeout_s,
             max_retries=settings.vision_max_retries,
         )
-
-    # ----- Future provider slots -----
-    # if provider == "qwen":
-    #     from vision.providers.qwen_client import QwenVisionClient
-    #     return QwenVisionClient(api_key=settings.api_key,
-    #                             model_name=settings.model_name)
 
     log.error("Unknown MODEL_PROVIDER=%r — vision disabled", provider)
     return None

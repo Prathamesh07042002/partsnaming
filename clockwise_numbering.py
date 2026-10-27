@@ -1,19 +1,14 @@
-"""
-clockwise_numbering.py – bubble placement, numbering, annotation and Excel output.
+"""clockwise_numbering.py — bubble placement, numbering, annotation, Excel output.
 
-Changes vs original:
-  * pdf_draft() uses the new anchor_x/anchor_y from pdf_extractor so bubbles
-    land on the actual leader endpoint rather than the text bbox centre.
-  * place_bubble() now takes an optional explicit target override so the
-    caller can pass the arrowhead coordinate as the leader target.
-  * _dedupe() compares on target position (arrowhead) rather than marker
-    position so two different callouts that happen to get the same bubble
-    slot are not silently dropped.
-  * _spread() respects image boundaries with a harder clamp.
-  * Everything else (number_items, annotate, write_excel, ocr_draft,
-    normalise_items, validate_items, clockwise_angle) is preserved verbatim.
-"""
+Excel header write now ALWAYS overwrites PART DESCRIPTION and DRAWING REV
+& DATE cells so template default text from a different part never leaks
+through. Rev is derived from filename suffix (e.g. "288231540110-A.png"
+-> rev "A"). Part description is taken from extracted candidates, with a
+fallback heuristic from note-type uppercase strings.
 
+Bubble placement, annotation, numbering, and vector/OCR helpers are all
+preserved from the previous version.
+"""
 from __future__ import annotations
 
 import argparse
@@ -35,7 +30,6 @@ BLUE = (32, 91, 177)
 BUBBLE_RADIUS = 55
 BUBBLE_OFFSET = 30
 
-# Junk filter used ONLY by the OCR fallback path.
 RE_JUNK_OCR = re.compile(
     r"do not scale|if in doubt|first angle|third angle|"
     r"all dims\b|all dimensions|dimensions in mm|"
@@ -66,13 +60,6 @@ RE_JUNK_OCR = re.compile(
 
 def place_bubble(bbox, w, h, radius=BUBBLE_RADIUS, offset=BUBBLE_OFFSET,
                  target_override=None):
-    """Compute (bubble_x, bubble_y, target_x, target_y) in pixel coords.
-
-    target_override: if given, use it as (tx, ty) instead of bbox centre.
-    The bubble is placed adjacent to the target if a target override is
-    supplied; otherwise it falls back to the original 8-candidate scheme
-    around the bbox.
-    """
     x1, y1, x2, y2 = bbox
     cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
 
@@ -81,7 +68,6 @@ def place_bubble(bbox, w, h, radius=BUBBLE_RADIUS, offset=BUBBLE_OFFSET,
     else:
         tx, ty = cx, cy
 
-    # Eight candidate positions around the bbox (unchanged from original)
     candidates = [
         (x2 + offset + radius, cy),
         (x1 - offset - radius, cy),
@@ -92,11 +78,7 @@ def place_bubble(bbox, w, h, radius=BUBBLE_RADIUS, offset=BUBBLE_OFFSET,
         (x2 + offset + radius, y2 + offset + radius),
         (x1 - offset - radius, y2 + offset + radius),
     ]
-    # When we have a real arrowhead target, prefer candidates that are
-    # on the opposite side from the arrowhead (so the leader is visible).
     if target_override is not None:
-        # Sort candidates by distance from target so the bubble sits near
-        # the callout text but the leader still points at the arrowhead.
         candidates.sort(key=lambda c: math.hypot(c[0] - tx, c[1] - ty),
                         reverse=True)
 
@@ -104,7 +86,6 @@ def place_bubble(bbox, w, h, radius=BUBBLE_RADIUS, offset=BUBBLE_OFFSET,
         if radius + 5 <= bx <= w - radius - 5 and radius + 5 <= by <= h - radius - 5:
             return int(bx), int(by), tx, ty
 
-    # Fallback: clamp to page
     return (
         int(max(radius + 5, min(w - radius - 5, x2 + offset + radius))),
         int(max(radius + 5, min(h - radius - 5, cy))),
@@ -113,12 +94,6 @@ def place_bubble(bbox, w, h, radius=BUBBLE_RADIUS, offset=BUBBLE_OFFSET,
 
 
 def _dedupe(items):
-    """Remove duplicate items (same text at the same source location).
-
-    Compares the ORIGINAL text bbox, NOT the arrowhead target — many
-    dimensions legitimately share one leader line, so target-based
-    dedupe would silently drop valid callouts.
-    """
     out = []
     for it in items:
         sx = it.get("source_x", it["x"])
@@ -137,9 +112,7 @@ def _dedupe(items):
     return out
 
 
-
 def _spread(items, min_distance=115.0, width=0, height=0, iterations=200):
-    """Push bubble centres apart so they do not overlap."""
     n = len(items)
     if n < 2:
         return
@@ -169,13 +142,8 @@ def _spread(items, min_distance=115.0, width=0, height=0, iterations=200):
             it["x"] = int(max(r, min(width - r, it["x"])))
             it["y"] = int(max(r, min(height - r, it["y"])))
 
-def mask_bubbles(src_path, items, dst_path, pad=8):
-    """Copy src → dst with every existing bubble erased to white.
 
-    This is used before a second OCR pass on the annotated image so
-    that the numbers drawn *inside* bubbles are not re-detected as
-    dimensions (which caused double bubbles).
-    """
+def mask_bubbles(src_path, items, dst_path, pad=8):
     im = Image.open(src_path).convert("RGB")
     draw = ImageDraw.Draw(im)
     r = BUBBLE_RADIUS + pad
@@ -184,16 +152,12 @@ def mask_bubbles(src_path, items, dst_path, pad=8):
         draw.ellipse((x - r, y - r, x + r, y + r), fill="white")
     im.save(dst_path)
 
+
 # =========================================================================
-# PDF-native draft  (main entry point called by process_pdfs.py)
+# PDF-native draft
 # =========================================================================
 
 def pdf_draft(pdf_path: Path, page_num: int | None = None, target_size=None):
-    """Extract inspection items from a native PDF and return (items, img_size).
-
-    Uses pdf_extractor.extract_pdf_candidates() which now returns
-    anchor_x / anchor_y (the nearest arrowhead in PDF points) per candidate.
-    """
     import pdf_extractor
 
     cands, stats, rect = pdf_extractor.extract_pdf_candidates(pdf_path, page_num)
@@ -203,7 +167,6 @@ def pdf_draft(pdf_path: Path, page_num: int | None = None, target_size=None):
     print(f"  Non-dimension:        {stats['no_dim']}")
     print(f"  Kept candidates:      {stats['kept']}")
 
-    # Scale factors: PDF points → pixel coords of the rendered PNG
     if target_size:
         img_w, img_h = target_size
         sx = img_w / rect.width
@@ -216,14 +179,11 @@ def pdf_draft(pdf_path: Path, page_num: int | None = None, target_size=None):
     items = []
     for c in cands:
         x1, y1, x2, y2 = c["bbox"]
-
-        # Convert PDF-pt bbox to pixel bbox
         px1 = int(x1 * sx)
         py1 = int(y1 * sy)
         px2 = int(x2 * sx)
         py2 = int(y2 * sy)
 
-        # Convert arrowhead anchor to pixel coords
         ax_pt = c.get("anchor_x")
         ay_pt = c.get("anchor_y")
         if ax_pt is not None and ay_pt is not None:
@@ -243,7 +203,6 @@ def pdf_draft(pdf_path: Path, page_num: int | None = None, target_size=None):
             "tolerance":     c.get("tolerance", ""),
             "x":  bx, "y":  by,
             "target_x": tx, "target_y": ty,
-            # NEW: original text bbox in pixel coords — used for dedupe
             "source_x":  px1, "source_y":  py1,
             "source_x2": px2, "source_y2": py2,
             "notes": "Extracted from native PDF",
@@ -255,11 +214,10 @@ def pdf_draft(pdf_path: Path, page_num: int | None = None, target_size=None):
 
 
 # =========================================================================
-# OCR fallback --> kept for compatibility
+# OCR fallback
 # =========================================================================
 
 def _bbox_back(angle, x1, y1, x2, y2, w, h):
-    """Map bbox from a rotated image back to original coords."""
     if angle == 0:   return (x1, y1, x2, y2)
     if angle == 90:  return (w - y2, x1, w - y1, x2)
     if angle == 180: return (w - x2, h - y2, w - x1, h - y1)
@@ -268,7 +226,6 @@ def _bbox_back(angle, x1, y1, x2, y2, w, h):
 
 
 def ocr_draft(image_path: Path):
-    """Multi-angle OCR (0/90/180/270) with symbol-friendly config."""
     try:
         import pytesseract
         from pytesseract import Output
@@ -330,11 +287,6 @@ def ocr_draft(image_path: Path):
 
 
 def merge_ocr_items(existing, ocr_new, exclusion_radius=30.0):
-    """Add OCR items that aren't already covered by an existing bubble.
-
-    An OCR hit is dropped if its centre lies within `exclusion_radius` px
-    of any existing item's target (that's the leader endpoint / bubble).
-    """
     merged = list(existing)
     for n in ocr_new:
         cx = n.get("source_x", n["x"])
@@ -350,8 +302,9 @@ def merge_ocr_items(existing, ocr_new, exclusion_radius=30.0):
             merged.append(n)
     return merged
 
+
 # =========================================================================
-# Clockwise ordering  
+# Clockwise ordering
 # =========================================================================
 
 def clockwise_angle(x, y, cx, cy):
@@ -378,7 +331,8 @@ def number_items(items):
         )
 
     ordered = (
-        buckets["material_description"][:1]
+        buckets["part_description"][:1]        # NEW — only if it exists
+        + buckets["material_description"][:1]
         + buckets["material_specification"][:1]
         + buckets["part_number"][:1]
         + buckets["envelope"][:1]
@@ -393,14 +347,17 @@ def number_items(items):
 
 
 # =========================================================================
-# Normalise / validate items  
+# Normalise / validate items
 # =========================================================================
 
 def normalise_items(raw):
     required = {"type", "parameter", "specification", "x", "y"}
-    allowed = {"material_description", "material_specification",
-               "part_number", "envelope", "surface_protection",
-               "feature", "mass", "note"}
+    allowed = {
+        "part_description",                     # NEW
+        "material_description", "material_specification",
+        "part_number", "envelope", "surface_protection",
+        "feature", "mass", "note",
+    }
     out = []
     for i, it in enumerate(raw, 1):
         miss = required - it.keys()
@@ -438,8 +395,6 @@ def _sanitize(value):
 
 
 def safe_write(sheet, row, col, value):
-    """Write a value; if the target is inside a merged range, write to the
-    top-left cell of that range instead.  Formatting is never touched."""
     value = _sanitize(value)
     cell = sheet.cell(row=row, column=col)
     if isinstance(cell, MergedCell):
@@ -450,7 +405,9 @@ def safe_write(sheet, row, col, value):
     else:
         cell.value = value
 
+
 _TOL_RE = re.compile(r"[±]\s*\d+(?:\.\d+)?")
+
 
 def _tol_or_extract(spec, cur):
     if cur and str(cur).strip():
@@ -458,32 +415,80 @@ def _tol_or_extract(spec, cur):
     m = _TOL_RE.search(spec or "")
     return m.group(0) if m else ""
 
+
+def _derive_part_no(image_path):
+    """Extract part number from filename stem.
+
+    "288231540110-A.png"  -> "288231540110"
+    "288231540110.png"    -> "288231540110"
+    """
+    if not image_path:
+        return ""
+    stem = Path(image_path).stem
+    return stem.split("-")[0].strip()
+
+
+def _derive_rev(image_path):
+    """Extract revision from filename suffix.
+
+    "288231540110-A.png"  -> "A"
+    "288231540110-B.png"  -> "B"
+    "288231540110.png"    -> ""  (no rev available)
+    """
+    if not image_path:
+        return ""
+    stem = Path(image_path).stem
+    parts = stem.split("-")
+    if len(parts) < 2:
+        return ""
+    return parts[1].strip()
+
+
+def _find_part_description(items):
+    """Heuristic: find a description-like value from note-type candidates.
+
+    Part descriptions on Tata drawings look like:
+        "BRACKET ASSY.BATTERY MTG"
+        "BEND STRIP"
+        "BACK COVER"
+    They are long, uppercase, contain letters, and are not pure digit
+    sequences (which would be part numbers / dims).
+    """
+    for it in items:
+        if it.get("type") != "note":
+            continue
+        text = str(it.get("specification") or it.get("text") or "").strip()
+        if not text or len(text) < 6:
+            continue
+        # Reject pure digits and dotted part numbers like "2882 3154 82 03"
+        compact = text.replace(" ", "").replace(".", "").replace("-", "")
+        if compact.isdigit():
+            continue
+        if not any(c.isalpha() for c in text):
+            continue
+        # Reject obvious boilerplate
+        if text.upper().startswith(("TACK WELD", "QTY.", "NOTE",
+                                    "DEBURR", "N12", "ON ALTERNATE")):
+            continue
+        # Accept uppercase description-looking text
+        if text.upper() == text and len(text) >= 8:
+            return text
+    return ""
+
+
 def write_excel(items, output_path, image_path=None):
     """Fill the AOI template. Only A-D written; formatting preserved.
 
-    Header cells:
-        C2  PART NO             (filename stem, fallback: extracted)
-        C3  PART DESCRIPTION    (only if extractor produced one)
-        C4  DRAWING NO          (same as C2)
-        C5  DRAWING REV & DATE  (only if extractor produced one)
-        N2  DATE:-DD.MM.YYYY
-
-    Data table:
-        Row 8   A8:D8 fixed headers (SR | PARAMETER | Specifications | Tolerance)
-        Row 9   sub-headers (left untouched)
-        Row 10+ one row per item; only columns A-D written.
-
-    Columns E onward are never touched.  Template file itself is not
-    modified — a copy is written to `output_path`.
+    Header cells are ALWAYS overwritten (blank if not extracted) so stale
+    template values from a different sample part never leak into output.
     """
     tpl = Path(__file__).resolve().parent / "554743810147 AOI.xlsx"
     if not tpl.exists():
         raise FileNotFoundError(f"Template not found: {tpl}")
 
-    wb = load_workbook(tpl)          # keeps every format / merge / formula
-    sh = wb.worksheets[0]            # sheet 1: 554743810147AOI
+    wb = load_workbook(tpl)
+    sh = wb.worksheets[0]
 
-    # ---------------- Header cells ----------------
     def _first_of(kind):
         for it in items:
             if it.get("type") == kind:
@@ -491,51 +496,57 @@ def write_excel(items, output_path, image_path=None):
                 return v or None
         return None
 
-    part_no = image_path.stem.split("-")[0] if image_path else ""
-    if not part_no:
-        part_no = _first_of("part_number") or ""
+    # --- PART NO / DRAWING NO (from filename, fallback to extractor) ---
+    part_no = _derive_part_no(image_path) or _first_of("part_number") or ""
+    safe_write(sh, 2, 3, part_no)     # C2  PART NO
+    safe_write(sh, 4, 3, part_no)     # C4  DRAWING NO
 
-    safe_write(sh, 2, 3, part_no)                 # C2  PART NO
-    safe_write(sh, 4, 3, part_no)                 # C4  DRAWING NO
+    # --- PART DESCRIPTION (always overwritten) ---
+    desc = (
+        _first_of("part_description")
+        or _find_part_description(items)
+        or ""
+    )
+    safe_write(sh, 3, 3, desc)        # C3
 
-    desc = _first_of("part_description")
-    if desc:
-        safe_write(sh, 3, 3, desc)                # C3
+    # --- DRAWING REV & DATE (always overwritten) ---
+    rev = (
+        _first_of("drawing_rev")
+        or _first_of("drawing_rev_date")
+        or _derive_rev(image_path)
+        or ""
+    )
+    safe_write(sh, 5, 3, rev)         # C5
 
-    rev = _first_of("drawing_rev") or _first_of("drawing_rev_date")
-    if rev:
-        safe_write(sh, 5, 3, rev)                 # C5
-
+    # --- Date stamp ---
     safe_write(sh, 2, 14,
                f"DATE:-{datetime.date.today().strftime('%d.%m.%Y')}")  # N2
 
     # ---------------- Data table ----------------
     DATA_START = 10
 
-    # Clear stale A–D values from row 10 down.  Upper bound covers both
-    # the sheet's current max row and the rows we are about to write so
-    # a previous longer run leaves no orphan rows.
     last_to_clear = max(sh.max_row, DATA_START + len(items) - 1)
     for r in range(DATA_START, last_to_clear + 1):
-        for c in (1, 2, 3, 4):                    # A, B, C, D only
+        for c in (1, 2, 3, 4):        # A, B, C, D only
             cell = sh.cell(row=r, column=c)
             if not isinstance(cell, MergedCell):
                 cell.value = None
 
     row = DATA_START
     for it in items:
-        safe_write(sh, row, 1, it["serial"])                              # A
-        safe_write(sh, row, 2, it["parameter"])                           # B
-        safe_write(sh, row, 3, it["specification"])                       # C
+        safe_write(sh, row, 1, it["serial"])                    # A
+        safe_write(sh, row, 2, it["parameter"])                 # B
+        safe_write(sh, row, 3, it["specification"])             # C
         safe_write(sh, row, 4,
-                _tol_or_extract(it["specification"],
-                                it.get("tolerance", "")))   # ← nayi            # D
+                   _tol_or_extract(it["specification"],
+                                   it.get("tolerance", "")))    # D
         row += 1
 
     wb.save(output_path)
 
+
 # =========================================================================
-# Annotation  
+# Annotation
 # =========================================================================
 
 def annotate(image_path, items, output_path):
@@ -573,7 +584,7 @@ def annotate(image_path, items, output_path):
 
 
 # =========================================================================
-# CLI  
+# CLI
 # =========================================================================
 
 def main():
@@ -582,8 +593,8 @@ def main():
     g = p.add_mutually_exclusive_group(required=True)
     g.add_argument("--items", type=Path)
     g.add_argument("--ocr", action="store_true")
-    g.add_argument("--pdf", type=Path, help="Native PDF (preferred over --ocr)")
-    p.add_argument("--page", type=int, default=None, help="PDF page index (0-based)")
+    g.add_argument("--pdf", type=Path)
+    p.add_argument("--page", type=int, default=None)
     p.add_argument("--output-dir", type=Path, default=Path("output"))
     a = p.parse_args()
 
@@ -606,7 +617,8 @@ def main():
         annotate(a.image, items, a.output_dir / "annotated_drawing.png")
         write_excel(items, a.output_dir / "extracted_dimensions.xlsx", a.image)
     else:
-        print("Note: PDF mode requires --output-dir; annotation is done by process_pdfs.py")
+        print("Note: PDF mode requires --output-dir; annotation is done by "
+              "process_pdfs.py")
 
     if a.ocr:
         (a.output_dir / "ocr_review_items.json").write_text(

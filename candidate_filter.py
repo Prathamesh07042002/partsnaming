@@ -66,7 +66,6 @@ RE_SCALE    = re.compile(r"^(?:SCALE|SCA)\s*[:=]?\s*[\d:./\s]+$", re.I)
 RE_SINGLE_LD = re.compile(r"^[A-Z]\d?$")
 RE_PCF      = re.compile(r"PCF[- ]?\d+", re.I)
 
-# ---- Table-cell / header patterns ----
 RE_PURE_TOL  = re.compile(r"^[±]\s*\d{1,2}(?:\.\d+)?$")
 RE_PURE_DEC  = re.compile(r"^\d{1,2}\.\d{1,2}$")
 RE_PURE_INT  = re.compile(r"^\d{1,3}$")
@@ -126,7 +125,6 @@ def _is_boilerplate(text: str) -> bool:
 
 def detect_table_regions(spans, grid_pt: float = 40.0,
                          min_per_cell: int = 3):
-    """Detect dense numeric grids from raw spans."""
     numeric_pts = []
     for s in spans:
         t = (s.get("text") or "").strip()
@@ -216,22 +214,9 @@ def filter_candidates(candidates, page_w: float, page_h: float,
     return kept, stats
 
 
-# ---------------------------------------------------------------------
-# NEW: cluster rejection applied to ALL sources (vector + vision)
-# ---------------------------------------------------------------------
-
 def reject_dense_clusters(candidates, radius_pt: float = 30.0,
                           min_neighbors: int = 4,
                           log=None):
-    """Drop feature candidates that sit inside a dense cluster.
-
-    Tolerance / roughness tables contain many small numbers packed
-    together.  A legitimate drawing callout normally has at most 1–2
-    neighbours within `radius_pt`.  Anything with >= `min_neighbors`
-    neighbours is almost certainly a table cell.
-
-    PROTECTED_TYPES are always preserved.
-    """
     feats = [c for c in candidates if c.get("type") == "feature"]
     out = []
     dropped = 0
@@ -261,3 +246,38 @@ def reject_dense_clusters(candidates, radius_pt: float = 30.0,
     if log and dropped:
         log.info("Cluster rejection: %d feature candidates dropped", dropped)
     return out
+
+
+# ---------------------------------------------------------------------
+# NEW: reject frame border letters/digits near page edges
+# ---------------------------------------------------------------------
+
+_FRAME_LETTERS = {"A", "B", "C", "D", "E", "F", "G", "H"}
+_FRAME_DIGITS = {"1", "2", "3", "4", "5", "6", "7", "8"}
+
+
+def reject_frame_borders(candidates, page_w, page_h, edge_pct=0.06):
+    """Drop single-letter/digit candidates that sit at page edges.
+
+    Tata drawings have A-H (left/right) and 1-8 (top/bottom) frame marks
+    that models often extract as if they were dimensions. Real dimensions
+    are never single letters or single 1-8 digits right at the page edge.
+    """
+    out = []
+    dropped = 0
+    for c in candidates:
+        text = (c.get("text") or "").strip().upper()
+        if len(text) == 1 and text:
+            bx1, by1, bx2, by2 = c["bbox"]
+            cx = (bx1 + bx2) / 2
+            cy = (by1 + by2) / 2
+            nx = cx / page_w if page_w else 0.5
+            ny = cy / page_h if page_h else 0.5
+            near_x = nx < edge_pct or nx > (1 - edge_pct)
+            near_y = ny < edge_pct or ny > (1 - edge_pct)
+            if (text in _FRAME_LETTERS and near_x) or \
+               (text in _FRAME_DIGITS and near_y):
+                dropped += 1
+                continue
+        out.append(c)
+    return out, dropped

@@ -1,4 +1,4 @@
-"""Batch-process every PDF AND drawing image; input-agnostic extraction."""
+"""Batch-process PDFs / images with graceful PyMuPDF fallback."""
 from __future__ import annotations
 
 import argparse
@@ -8,11 +8,21 @@ import sys
 import tempfile
 from pathlib import Path
 
-import pymupdf as fitz
 from PIL import Image
+
+# PyMuPDF is optional — Application Control may block its DLL.
+try:
+    import pymupdf as fitz
+    _HAS_FITZ = True
+except Exception as _e:
+    fitz = None
+    _HAS_FITZ = False
+    print(f"[warn] PyMuPDF unavailable ({type(_e).__name__}) "
+          f"— using pdf2image fallback")
 
 import clockwise_numbering as cn
 from pipeline_adapter import pipeline_draft
+from input_normalizer import pick_best_page
 
 
 POPPLER_CANDIDATES = [
@@ -24,52 +34,75 @@ POPPLER_CANDIDATES = [
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
 
 
-def find_poppler_tool(name: str):
-    exe = shutil.which(name)
-    if exe:
-        return exe
+def _find_poppler_path():
+    if shutil.which("pdftoppm"):
+        return None
     for folder in POPPLER_CANDIDATES:
-        candidate = Path(folder) / f"{name}.exe"
-        if candidate.exists():
-            return str(candidate)
+        if Path(folder).exists():
+            return folder
     return None
 
 
-def get_page_count_fitz(pdf: Path) -> int:
+def get_page_count(pdf: Path) -> int:
+    if _HAS_FITZ:
+        try:
+            doc = fitz.open(str(pdf))
+            n = len(doc)
+            doc.close()
+            return n
+        except Exception:
+            pass
     try:
-        doc = fitz.open(str(pdf))
-        n = len(doc)
-        doc.close()
-        return n
-    except Exception:
+        from pdf2image import pdfinfo_from_path
+        info = pdfinfo_from_path(
+            str(pdf), poppler_path=_find_poppler_path(),
+        )
+        return int(info.get("Pages", 1))
+    except Exception as e:
+        print(f"  [page-count] {e}")
         return 0
 
 
-def render_page_fitz(pdf: Path, page_num: int, out_png: Path, dpi: int = 300) -> bool:
+def render_pdf_page_poppler(pdf: Path, page_num: int,
+                             out_png: Path, dpi: int = 300) -> bool:
     try:
-        doc = fitz.open(str(pdf))
-        page = doc[page_num]
-        scale = dpi / 72.0
-        pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
-        pix.save(str(out_png))
-        doc.close()
+        from pdf2image import convert_from_path
+        images = convert_from_path(
+            str(pdf), dpi=dpi,
+            first_page=page_num + 1, last_page=page_num + 1,
+            poppler_path=_find_poppler_path(),
+        )
+        if not images:
+            return False
+        images[0].convert("RGB").save(out_png)
         return True
     except Exception as e:
-        print(f"  [render_page_fitz] {e}")
+        print(f"  [render_poppler] {e}")
         return False
 
 
 def render_source_image(path: Path, fitz_page: int, out_png: Path) -> bool:
-    """PDF → 300 DPI PNG; image input → copied as-is."""
     suffix = path.suffix.lower()
     if suffix == ".pdf":
-        return render_page_fitz(path, fitz_page, out_png, dpi=300)
+        if _HAS_FITZ:
+            try:
+                doc = fitz.open(str(path))
+                page = doc[fitz_page]
+                scale = 300 / 72.0
+                pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale),
+                                      alpha=False)
+                pix.save(str(out_png))
+                doc.close()
+                return True
+            except Exception as e:
+                print(f"  [render_fitz] {e} — trying poppler")
+        return render_pdf_page_poppler(path, fitz_page, out_png, dpi=300)
     try:
         with Image.open(path) as im:
             im.convert("RGB").save(out_png)
         return True
     except Exception as e:
-        print(f"  [render_source_image] {e}")
+        print(f"  [render_image] {e}")
         return False
 
 
@@ -87,12 +120,16 @@ def process_one(path: Path, root: Path, page_override: int, force: bool):
     is_pdf = path.suffix.lower() == ".pdf"
 
     if is_pdf:
-        total_pages = get_page_count_fitz(path)
         if page_override > 0:
-            page_1based = page_override
+            fitz_page = page_override - 1
         else:
-            page_1based = total_pages if total_pages > 0 else 1
-        fitz_page = max(0, page_1based - 1)
+            try:
+                fitz_page = pick_best_page(path)
+            except Exception as e:
+                print(f"  [page-pick] {e} — using last page")
+                total = get_page_count(path)
+                fitz_page = max(0, total - 1) if total > 0 else 0
+        page_1based = fitz_page + 1
     else:
         page_1based = 1
         fitz_page = 0
@@ -119,7 +156,8 @@ def process_one(path: Path, root: Path, page_override: int, force: bool):
                 )
                 mode_label = "pipeline"
             except Exception as e:
-                print(f"[WARN] {part}: pipeline failed ({e}); falling back to OCR")
+                print(f"[WARN] {part}: pipeline failed ({e}); "
+                      f"falling back to OCR")
                 raw = cn.ocr_draft(image)
                 mode_label = "ocr"
 
@@ -129,24 +167,24 @@ def process_one(path: Path, root: Path, page_override: int, force: bool):
         cn.annotate(image, items, annotated)
 
         (out_dir / f"{part}.json").write_text(
-            json.dumps(items, indent=2), encoding="utf-8"
+            json.dumps(items, indent=2), encoding="utf-8",
         )
 
-        print(f"[OK]    {part}  (page {page_1based}, {mode_label}, {len(items)} items)")
+        print(f"[OK]    {part}  (page {page_1based}, {mode_label}, "
+              f"{len(items)} items)")
         return "ok"
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
-    "--input-dir",
-    type=Path,
-    default=Path(__file__).resolve().parent / "sources",
+        "--input-dir", type=Path,
+        default=Path(__file__).resolve().parent / "sources",
     )
     parser.add_argument("--force", action="store_true")
-    parser.add_argument("--page", type=int, default=0)
-    parser.add_argument("--only", type=str, default="",
-                help="Process only this file stem (e.g. 550629507102)")
+    parser.add_argument("--page", type=int, default=0,
+                        help="Force 1-based page; 0 = auto-pick")
+    parser.add_argument("--only", type=str, default="")
     args = parser.parse_args()
 
     root = args.input_dir.resolve()
