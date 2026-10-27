@@ -1,0 +1,16 @@
+*.png
+*.xlsx
+*.jpg
+*.jpeg
+*.pdf
+*.docx
+*.pptx
+*.mp4
+outputs/*
+reviewed_items/*
+test_debug/*
+
+diag_278909130282/*
+diag_288231540110/*
+inspect_out/*
+sources/*
