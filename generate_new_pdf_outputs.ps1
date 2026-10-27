@@ -1,29 +1,82 @@
-# Regenerate the reviewed outputs for the three supplied drawing PDFs.
-# Requires pdftoppm (Poppler) to render the required PDF page temporarily.
-$ErrorActionPreference = 'Stop'
+<#
+.SYNOPSIS
+    Single entry point for the drawing-annotation pipeline.
 
-$jobs = @(
-    @{ Part = '550629507102'; Pdf = '550629507102.pdf'; Page = 2 },
-    @{ Part = '278909130282'; Pdf = '278909130282.pdf'; Page = 2 },
-    @{ Part = '503046803301'; Pdf = '503046803301.pdf'; Page = 1 }
+.DESCRIPTION
+    Delegates to process_pdfs.py, which:
+      - discovers every *.pdf in this folder,
+      - skips PDFs whose outputs already exist,
+      - uses reviewed_items/<part>.json when available, else falls back to --ocr,
+      - writes outputs/<part>/annotated_drawing.png and extracted_dimensions.xlsx.
+
+.PARAMETER Force
+    Re-process PDFs even if their outputs already exist.
+
+.PARAMETER Page
+    Page to render (0 = last page, default).
+
+.PARAMETER InputDir
+    Folder containing PDFs. Defaults to this script's folder.
+
+.EXAMPLE
+    .\generate_new_pdf_outputs.ps1
+
+.EXAMPLE
+    .\generate_new_pdf_outputs.ps1 -Force
+
+.EXAMPLE
+    .\generate_new_pdf_outputs.ps1 -Page 1 -InputDir "D:\drawings\inbox"
+#>
+param(
+    [switch]$Force,
+    [int]$Page = 0,
+    [string]$InputDir = (Join-Path $PSScriptRoot 'sources')
 )
 
-$renderDir = Join-Path ([System.IO.Path]::GetTempPath()) ("partsnaming-render-" + [guid]::NewGuid())
-New-Item -ItemType Directory -Path $renderDir | Out-Null
+$ErrorActionPreference = 'Stop'
 
-try {
-    foreach ($job in $jobs) {
-        $imageBase = Join-Path $renderDir $job.Part
-        & pdftoppm.exe -png -r 200 -f $job.Page -l $job.Page $job.Pdf $imageBase
-        if ($LASTEXITCODE -ne 0) { throw "Could not render $($job.Pdf)." }
+# --- Anchor everything to this script's folder ---
+$root = $PSScriptRoot
+if (-not $root) { $root = Split-Path -Parent $MyInvocation.MyCommand.Path }
+Set-Location -LiteralPath $root
 
-        $image = "{0}-{1}.png" -f $imageBase, $job.Page
-        python .\clockwise_numbering.py $image `
-            --items ("reviewed_items/{0}.json" -f $job.Part) `
-            --output-dir ("outputs/{0}" -f $job.Part)
-        if ($LASTEXITCODE -ne 0) { throw "Could not annotate $($job.Part)." }
-    }
+$driverPath = Join-Path $root 'process_pdfs.py'
+if (-not (Test-Path -LiteralPath $driverPath)) {
+    throw "process_pdfs.py not found next to this script: $driverPath"
 }
-finally {
-    Remove-Item -LiteralPath $renderDir -Recurse -Force -ErrorAction SilentlyContinue
+
+# --- Resolve python ---
+$python = (Get-Command python -ErrorAction SilentlyContinue).Source
+if (-not $python) {
+    $python = (Get-Command py -ErrorAction SilentlyContinue).Source
 }
+if (-not $python) { throw "Python not found on PATH." }
+Write-Host "Using python: $python"
+Write-Host "Project root: $root"
+Write-Host ""
+
+# --- Build args for process_pdfs.py ---
+$pyArgs = @($driverPath, '--input-dir', $InputDir)
+if ($Force)      { $pyArgs += '--force' }
+if ($Page -gt 0) { $pyArgs += @('--page', $Page) }
+
+# --- Run ---
+& $python @pyArgs
+$exitCode = $LASTEXITCODE
+
+if ($exitCode -ne 0) {
+    throw "process_pdfs.py exited with code $exitCode"
+}
+
+# # The one command they asked for:
+# .\generate_new_pdf_outputs.ps1
+
+# # Re-process everything:
+# .\generate_new_pdf_outputs.ps1 -Force
+
+# # Single-page drawings:
+# .\generate_new_pdf_outputs.ps1 -Page 1
+
+# # Different folder:
+# .\generate_new_pdf_outputs.ps1 -InputDir "D:\drawings\inbox"
+# 
