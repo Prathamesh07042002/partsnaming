@@ -1,13 +1,5 @@
 """pipeline_adapter.py - glue between the new extraction pipeline and the
 existing bubbling engine in clockwise_numbering.py.
-
-The bubble engine consumes `items` with pixel coordinates.  This module
-converts unified candidates (page points) into that schema, reusing the
-existing place_bubble / _dedupe / _spread helpers unchanged.
-
-All pixel coordinates produced here are clamped into [0, w-1] / [0, h-1]
-so the (read-only) validate_items boundary check cannot fail on anchors
-that land exactly on the far edge of the page (e.g. vision anchor_norm=1.0).
 """
 from __future__ import annotations
 
@@ -22,11 +14,17 @@ log = logging.getLogger(__name__)
 
 
 _ALLOWED_TYPES = {
+    "part_description",          
     "material_description", "material_specification",
     "part_number", "envelope", "surface_protection",
     "feature", "mass", "note",
 }
 
+_TB_TYPES = {
+    "part_description",          
+    "part_number", "material_description", "material_specification",
+    "envelope", "mass", "surface_protection",
+}
 
 def _safe_type(t: str) -> str:
     t = (t or "").strip().lower()
@@ -34,7 +32,6 @@ def _safe_type(t: str) -> str:
 
 
 def _clamp(v: float, lo: int, hi_inclusive: int) -> int:
-    """Clamp to [lo, hi_inclusive]; hi_inclusive is a valid pixel index."""
     iv = int(round(v))
     if iv < lo:
         return lo
@@ -44,7 +41,6 @@ def _clamp(v: float, lo: int, hi_inclusive: int) -> int:
 
 
 def _sanitize_bbox(bbox, w: int, h: int):
-    """Return (x1, y1, x2, y2) clamped inside the image, x1<=x2, y1<=y2."""
     x1, y1, x2, y2 = (int(round(v)) for v in bbox)
     x1 = _clamp(x1, 0, w - 1)
     y1 = _clamp(y1, 0, h - 1)
@@ -54,8 +50,6 @@ def _sanitize_bbox(bbox, w: int, h: int):
         x1, x2 = x2, x1
     if y2 < y1:
         y1, y2 = y2, y1
-    # guarantee a non-zero box (validate_items wants >=0 anyway; this helps
-    # place_bubble pick a sane slot)
     if x2 == x1:
         x2 = min(w - 1, x1 + 1)
     if y2 == y1:
@@ -63,13 +57,39 @@ def _sanitize_bbox(bbox, w: int, h: int):
     return x1, y1, x2, y2
 
 
+def _relayout_title_block(items, img_w, img_h):
+    """Stack TB bubbles in a vertical column at the right edge.
+
+    Called AFTER cn._spread() so cluster-pushing has already happened.
+    Puts the title-block bubbles back near where they belong, in a
+    column along the right edge, sorted by their original top-down
+    target_y so order matches the drawing.
+    """
+    r = cn.BUBBLE_RADIUS
+    tb_items = [it for it in items if it.get("type") in _TB_TYPES]
+    if len(tb_items) < 2:
+        return
+
+    tb_items.sort(key=lambda it: it.get("target_y", it["y"]))
+
+    right_x = img_w - r - 15
+    gap = 2 * r + 15
+
+    total_h = len(tb_items) * gap
+    start_y = max(r + 15, img_h - total_h - 40)
+
+    for i, it in enumerate(tb_items):
+        it["x"] = right_x
+        it["y"] = min(img_h - r - 5, start_y + i * gap)
+
+    log.info("Re-laid-out %d title-block bubbles at right edge",
+             len(tb_items))
+
+
 def pipeline_draft(input_path: Path, page_num: int | None = None,
                    target_size: tuple[int, int] | None = None,
                    settings: Settings | None = None):
-    """Extraction entrypoint that mirrors cn.pdf_draft's signature.
-
-    Returns (items, (img_w, img_h)).
-    """
+    """Extraction entrypoint that mirrors cn.pdf_draft's signature."""
     settings = settings or load_settings()
     result = extract_for_page(input_path, page_num, settings)
     page = result.page
@@ -89,14 +109,12 @@ def pipeline_draft(input_path: Path, page_num: int | None = None,
         items = []
         skipped = 0
         for c in result.candidates:
-            # --- bbox: clamp into image rectangle ------------------------
             px1, py1, px2, py2 = _sanitize_bbox(
                 (c["bbox"][0] * sx, c["bbox"][1] * sy,
                  c["bbox"][2] * sx, c["bbox"][3] * sy),
                 img_w, img_h,
             )
 
-            # --- anchor → target px, clamped so anchor never == w or h ---
             ax_pt = c.get("anchor_x")
             ay_pt = c.get("anchor_y")
             if ax_pt is None or ay_pt is None:
@@ -111,7 +129,6 @@ def pipeline_draft(input_path: Path, page_num: int | None = None,
                 target_override=target_px,
             )
 
-            # place_bubble already clamps the bubble; still guard the target
             tx = _clamp(tx, 0, img_w - 1)
             ty = _clamp(ty, 0, img_h - 1)
             bx = _clamp(bx, 0, img_w - 1)
@@ -134,6 +151,9 @@ def pipeline_draft(input_path: Path, page_num: int | None = None,
 
         items = cn._dedupe(items)
         cn._spread(items, min_distance=115.0, width=img_w, height=img_h)
+
+        _relayout_title_block(items, img_w, img_h)
+
         return items, (img_w, img_h)
     finally:
         page.close()

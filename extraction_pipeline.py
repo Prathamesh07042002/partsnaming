@@ -9,10 +9,26 @@ from config import Settings, load_settings
 from input_normalizer import NormalizedPage, normalize_input
 from candidate_filter import (
     filter_candidates, detect_table_regions, reject_dense_clusters,
+    reject_frame_borders,
 )
 from candidate_merger import merge_candidates
 
 log = logging.getLogger(__name__)
+
+
+def _pymupdf_available() -> bool:
+    try:
+        import pymupdf  # noqa: F401
+        return True
+    except Exception:
+        try:
+            import fitz  # noqa: F401
+            return True
+        except Exception:
+            return False
+
+
+_HAS_PYMUPDF = _pymupdf_available()
 
 
 @dataclass
@@ -23,6 +39,8 @@ class ExtractionResult:
 
 
 def _vector_candidates(page):
+    if not _HAS_PYMUPDF:
+        return []
     if page.kind != "pdf" or page.pdf_doc is None:
         return []
     try:
@@ -58,6 +76,8 @@ def _vision_candidates(page, settings):
                 "content_w":   page.content_w,
                 "content_h":   page.content_h,
                 "square_side": page.square_side,
+                "source_path": str(page.source_path),
+                "kind":        page.kind,
             },
         )
         log.info("Vision source (%s): %d candidates",
@@ -65,6 +85,18 @@ def _vision_candidates(page, settings):
         return cands
     except Exception as exc:
         log.exception("Vision extraction failed: %s", exc)
+        return []
+
+
+def _detect_table_regions_safe(page):
+    if not _HAS_PYMUPDF or page.kind != "pdf":
+        return []
+    try:
+        from pdf_extractor import extract_pdf_spans
+        spans, _ = extract_pdf_spans(page.source_path, page.page_num)
+        return detect_table_regions(spans)
+    except Exception as exc:
+        log.debug("Table-region detection skipped: %s", exc)
         return []
 
 
@@ -79,20 +111,16 @@ def extract_for_page(input_path: Path, page_num=None,
         input_path, page_num=page_num,
         vision_dpi=settings.vision_dpi,
         vector_min_spans=settings.vector_min_spans,
+        apply_padding=settings.vision_padding,
     )
     log.info(
         "Normalized: kind=%s page=%d size=%.0fx%.0fpt vector_spans=%d "
-        "has_vector=%s",
+        "has_vector=%s pad=(%d,%d) content=%dx%d",
         page.kind, page.page_num, page.width_pt, page.height_pt,
         page.vector_span_count, page.has_vector_text,
+        page.pad_left, page.pad_top, page.content_w, page.content_h,
     )
-    log.info("Padding: content=%dx%d → square=%d (offset %d, %d)",
-             page.content_w, page.content_h, page.square_side,
-             page.pad_left, page.pad_top)
-    # mode = settings.extraction_mode
-    # if mode not in ("vector_first", "vision_first", "hybrid"):
-    #     log.warning("Unknown EXTRACTION_MODE=%r — defaulting to hybrid", mode)
-    #     mode = "hybrid"
+
     mode = settings.extraction_mode
     if mode not in ("vector_first", "vision_first", "hybrid", "vision_only"):
         log.warning("Unknown EXTRACTION_MODE=%r — defaulting to hybrid", mode)
@@ -100,34 +128,7 @@ def extract_for_page(input_path: Path, page_num=None,
 
     vector_cands, vision_cands = [], []
 
-    # if mode == "vector_first":
-    #     vector_cands = _vector_candidates(page)
-    #     if page.kind == "image" or not vector_cands:
-    #         vision_cands = _vision_candidates(page, settings)
-    # elif mode == "vision_first":
-    #     vision_cands = _vision_candidates(page, settings)
-    #     if page.kind == "pdf":
-    #         vector_cands = _vector_candidates(page)
-    # else:
-    #     vector_cands = _vector_candidates(page)
-    #     vision_cands = _vision_candidates(page, settings)
-    # if mode == "vision_only":
-    #     # Skip vector entirely — pure Gemini run for diagnosis.
-    #     log.info("vision_only: vector source disabled")
-    #     vision_cands = _vision_candidates(page, settings)
-    # elif mode == "vector_first":
-    #     vector_cands = _vector_candidates(page)
-    #     if page.kind == "image" or not vector_cands:
-    #         vision_cands = _vision_candidates(page, settings)
-    # elif mode == "vision_first":
-    #     vision_cands = _vision_candidates(page, settings)
-    #     if page.kind == "pdf":
-    #         vector_cands = _vector_candidates(page)
-    # else:
-    #     vector_cands = _vector_candidates(page)
-    #     vision_cands = _vision_candidates(page, settings)
     if mode == "vision_only":
-        # Skip vector entirely — pure Gemini run for diagnosis.
         log.info("vision_only: vector source disabled")
         vision_cands = _vision_candidates(page, settings)
     elif mode == "vector_first":
@@ -141,19 +142,9 @@ def extract_for_page(input_path: Path, page_num=None,
     else:
         vector_cands = _vector_candidates(page)
         vision_cands = _vision_candidates(page, settings)
-    # --- table-region detection on raw spans -----------------------------
-    try:
-        from pdf_extractor import extract_pdf_spans
-        if page.kind == "pdf":
-            spans, _ = extract_pdf_spans(page.source_path, page.page_num)
-            table_regions = detect_table_regions(spans)
-        else:
-            table_regions = []
-    except Exception as exc:
-        log.warning("Table-region detection failed: %s", exc)
-        table_regions = []
 
-    # --- filter both sources ---------------------------------------------
+    table_regions = _detect_table_regions_safe(page)
+
     vector_cands, vstats = filter_candidates(
         vector_cands, page.width_pt, page.height_pt, table_regions,
     )
@@ -168,18 +159,29 @@ def extract_for_page(input_path: Path, page_num=None,
         len(table_regions),
     )
 
-    # --- NEW: cluster rejection on combined stream -----------------------
+    # NEW: frame-digit rejection
+    vision_cands, frame_dropped = reject_frame_borders(
+        vision_cands, page.width_pt, page.height_pt,
+    )
+    vector_cands, vframe_dropped = reject_frame_borders(
+        vector_cands, page.width_pt, page.height_pt,
+    )
+    if frame_dropped or vframe_dropped:
+        log.info("Frame border filter: %d vision + %d vector dropped",
+                 frame_dropped, vframe_dropped)
+
+    # Cluster rejection
     combined = vector_cands + vision_cands
     before = len(combined)
-    combined = reject_dense_clusters(combined, radius_pt=30.0,
-                                     min_neighbors=4, log=log)
+    combined = reject_dense_clusters(
+        combined, radius_pt=30.0, min_neighbors=4, log=log,
+    )
     if len(combined) < before:
-        log.info("Cluster rejection removed %d candidates", before - len(combined))
-        # split back (preserve order)
+        log.info("Cluster rejection removed %d candidates",
+                 before - len(combined))
         vector_cands = [c for c in combined if c.get("source") == "vector"]
         vision_cands = [c for c in combined if c.get("source") != "vector"]
 
-    # --- merge ------------------------------------------------------------
     merged, mstats = merge_candidates(
         vector_cands, vision_cands,
         spatial_radius_pt=settings.merge_spatial_radius_pt,
