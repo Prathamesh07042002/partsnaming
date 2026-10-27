@@ -1,1 +1,0 @@
-"""vision - provider-independent vision extraction subpackage."""
