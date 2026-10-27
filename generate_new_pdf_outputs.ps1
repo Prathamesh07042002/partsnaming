@@ -1,82 +1,56 @@
-<#
-.SYNOPSIS
-    Single entry point for the drawing-annotation pipeline.
-
-.DESCRIPTION
-    Delegates to process_pdfs.py, which:
-      - discovers every *.pdf in this folder,
-      - skips PDFs whose outputs already exist,
-      - uses reviewed_items/<part>.json when available, else falls back to --ocr,
-      - writes outputs/<part>/annotated_drawing.png and extracted_dimensions.xlsx.
-
-.PARAMETER Force
-    Re-process PDFs even if their outputs already exist.
-
-.PARAMETER Page
-    Page to render (0 = last page, default).
-
-.PARAMETER InputDir
-    Folder containing PDFs. Defaults to this script's folder.
-
-.EXAMPLE
-    .\generate_new_pdf_outputs.ps1
-
-.EXAMPLE
-    .\generate_new_pdf_outputs.ps1 -Force
-
-.EXAMPLE
-    .\generate_new_pdf_outputs.ps1 -Page 1 -InputDir "D:\drawings\inbox"
-#>
-param(
-    [switch]$Force,
-    [int]$Page = 0,
-    [string]$InputDir = (Join-Path $PSScriptRoot 'sources')
-)
-
+# Regenerate the reviewed outputs for the three supplied drawing PDFs.
+# Requires pdftoppm (Poppler) to render the required PDF page temporarily.
 $ErrorActionPreference = 'Stop'
 
 # --- Anchor everything to this script's folder ---
 $root = $PSScriptRoot
 if (-not $root) { $root = Split-Path -Parent $MyInvocation.MyCommand.Path }
-Set-Location -LiteralPath $root
+Set-Location -LiteralPath $root          # make Python's CWD deterministic
 
-$driverPath = Join-Path $root 'process_pdfs.py'
-if (-not (Test-Path -LiteralPath $driverPath)) {
-    throw "process_pdfs.py not found next to this script: $driverPath"
+# Resolve pdftoppm robustly (VS Code stale-env safe)
+$pdftoppm = (Get-Command pdftoppm -ErrorAction SilentlyContinue).Source
+if (-not $pdftoppm) {
+    $candidates = @(
+        "C:\Program Files\poppler-26.09.0\Library\bin\pdftoppm.exe",
+        "C:\Program Files\poppler\Library\bin\pdftoppm.exe",
+        "C:\poppler\Library\bin\pdftoppm.exe"
+    )
+    foreach ($c in $candidates) { if (Test-Path $c) { $pdftoppm = $c; break } }
 }
+if (-not $pdftoppm) { throw "pdftoppm not found. Add Poppler to PATH." }
+Write-Host "Using pdftoppm: $pdftoppm"
 
-# --- Resolve python ---
-$python = (Get-Command python -ErrorAction SilentlyContinue).Source
-if (-not $python) {
-    $python = (Get-Command py -ErrorAction SilentlyContinue).Source
+$jobs = @(
+    @{ Part = '550629507102'; Pdf = '550629507102.pdf'; Page = 2 },
+    @{ Part = '278909130282'; Pdf = '278909130282.pdf'; Page = 2 },
+    @{ Part = '503046803301'; Pdf = '503046803301.pdf'; Page = 1 }
+)
+
+$renderDir = Join-Path ([System.IO.Path]::GetTempPath()) ("partsnaming-render-" + [guid]::NewGuid())
+New-Item -ItemType Directory -Path $renderDir | Out-Null
+
+try {
+    foreach ($job in $jobs) {
+        $pdfPath    = Join-Path $root $job.Pdf
+        $itemsPath  = Join-Path $root ("reviewed_items\{0}.json" -f $job.Part)
+        $outDir     = Join-Path $root ("outputs\{0}" -f $job.Part)
+        $scriptPath = Join-Path $root "clockwise_numbering.py"
+
+        if (-not (Test-Path -LiteralPath $pdfPath))   { throw "Missing PDF: $pdfPath" }
+        if (-not (Test-Path -LiteralPath $itemsPath)) { throw "Missing items JSON: $itemsPath" }
+
+        $imageBase = Join-Path $renderDir $job.Part
+        & $pdftoppm -png -r 200 -f $job.Page -l $job.Page $pdfPath $imageBase
+        if ($LASTEXITCODE -ne 0) { throw "Could not render $($job.Pdf)." }
+
+        $image = "{0}-{1}.png" -f $imageBase, $job.Page
+
+        python $scriptPath $image `
+            --items $itemsPath `
+            --output-dir $outDir
+        if ($LASTEXITCODE -ne 0) { throw "Could not annotate $($job.Part)." }
+    }
 }
-if (-not $python) { throw "Python not found on PATH." }
-Write-Host "Using python: $python"
-Write-Host "Project root: $root"
-Write-Host ""
-
-# --- Build args for process_pdfs.py ---
-$pyArgs = @($driverPath, '--input-dir', $InputDir)
-if ($Force)      { $pyArgs += '--force' }
-if ($Page -gt 0) { $pyArgs += @('--page', $Page) }
-
-# --- Run ---
-& $python @pyArgs
-$exitCode = $LASTEXITCODE
-
-if ($exitCode -ne 0) {
-    throw "process_pdfs.py exited with code $exitCode"
+finally {
+    Remove-Item -LiteralPath $renderDir -Recurse -Force -ErrorAction SilentlyContinue
 }
-
-# # The one command they asked for:
-# .\generate_new_pdf_outputs.ps1
-
-# # Re-process everything:
-# .\generate_new_pdf_outputs.ps1 -Force
-
-# # Single-page drawings:
-# .\generate_new_pdf_outputs.ps1 -Page 1
-
-# # Different folder:
-# .\generate_new_pdf_outputs.ps1 -InputDir "D:\drawings\inbox"
-# 
