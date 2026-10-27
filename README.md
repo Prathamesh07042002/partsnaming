@@ -39,3 +39,41 @@ removes those images automatically when it finishes. It requires `pdftoppm`
 
 The reviewed extraction and exact marker targets are stored in
 `reviewed_items/<part-number>.json`.
+\
+
+
+new architecture
+                ┌──────────────────────┐
+                │   Drawing Input      │
+                │ PDF / PNG / JPG etc. │
+                └──────────┬───────────┘
+                           │
+                           ▼
+                ┌──────────────────────┐
+                │ Input Normalization  │
+                └──────────┬───────────┘
+                           │
+             ┌─────────────┴─────────────┐
+             ▼                           ▼
+      Vector available?            Image available
+             │                           │
+             ▼                           ▼
+        PyMuPDF                     Vision Model
+             │                       (Gemini)
+             │                           │
+             └─────────────┬─────────────┘
+                           ▼
+                ┌──────────────────────┐
+                │ Candidate Merger     │
+                │ + Validation         │
+                │ + Deduplication      │
+                └──────────┬───────────┘
+                           ▼
+                ┌──────────────────────┐
+                │ Bubble / Numbering   │
+                │ Existing Logic       │
+                └──────────┬───────────┘
+                           ▼
+                ┌──────────────────────┐
+                │ Excel Generator      │
+                └──────────────────────┘

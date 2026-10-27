@@ -1,14 +1,16 @@
 [
-  {"type":"material_description","parameter":"Material / thickness","specification":"PLATE 7 THICK","tolerance":"N/A","x":2170,"y":1980,"target_x":2280,"target_y":1988,"notes":"Title block"},
-  {"type":"material_specification","parameter":"Material specification","specification":"Fe 410 WA SS : 4017","tolerance":"N/A","x":2170,"y":2040,"target_x":2280,"target_y":2020,"notes":"Title block"},
-  {"type":"feature","view":"left","order":3,"parameter":"Through holes","specification":"Dia 11","tolerance":"Per ISO 2768-1m","x":875,"y":1610,"target_x":803,"target_y":1659,"notes":"2 holes through"},
-  {"type":"feature","view":"left","order":4,"parameter":"Hole centre-to-centre distance","specification":"30","tolerance":"+/-0.5","x":455,"y":1485,"target_x":511,"target_y":1537,"notes":"Reference dimension"},
-  {"type":"feature","view":"left","order":5,"parameter":"Upper inside radius","specification":"R10","tolerance":"Per ISO 2768-1m","x":900,"y":550,"target_x":955,"target_y":594,"notes":""},
-  {"type":"feature","view":"main","order":6,"parameter":"Overall height","specification":"193.3","tolerance":"+/-1","x":1450,"y":965,"target_x":1517,"target_y":1028,"notes":""},
-  {"type":"feature","view":"main","order":7,"parameter":"Top outside width","specification":"50","tolerance":"+/-0.5","x":1830,"y":270,"target_x":1885,"target_y":326,"notes":""},
-  {"type":"feature","view":"main","order":8,"parameter":"Upper inside radius","specification":"R17","tolerance":"Per ISO 2768-1m","x":2190,"y":320,"target_x":2127,"target_y":381,"notes":""},
-  {"type":"feature","view":"main","order":9,"parameter":"Upper step height","specification":"15.5","tolerance":"+/-1","x":2300,"y":690,"target_x":2244,"target_y":638,"notes":""},
-  {"type":"feature","view":"main","order":10,"parameter":"Top internal opening width","specification":"20","tolerance":"+2 / -1","x":1950,"y":740,"target_x":2003,"target_y":675,"notes":""},
-  {"type":"mass","parameter":"Final mass","specification":"0.537 kg","tolerance":"N/A","x":3200,"y":2360,"target_x":3065,"target_y":2245,"notes":"Last before note"},
-  {"type":"note","parameter":"General note","specification":"SHARP EDGES TO BE DEBURRED; ALL OTHER DETAILS AS PER 2527 2210 71 15.","tolerance":"N/A","x":1200,"y":2125,"target_x":1340,"target_y":2120,"notes":"Always last"}
+  {"type":"part_number","parameter":"Part No.","specification":"288231540110","tolerance":"","x":0,"y":0,"target_x":0,"target_y":0,"notes":"Title block part number"},
+  {"type":"material_description","parameter":"Thk","specification":"5 mm Thk - T SH HR-Fe410","tolerance":"","x":0,"y":0,"target_x":0,"target_y":0,"notes":"Title block"},
+  {"type":"material_specification","parameter":"Grade","specification":"TS23521","tolerance":"","x":0,"y":0,"target_x":0,"target_y":0,"notes":"Title block"},
+  {"type":"envelope","parameter":"Envelope","specification":"409.00 x 65.00 x 27.15","tolerance":"","x":0,"y":0,"target_x":0,"target_y":0,"notes":"Title block"},
+  {"type":"mass","parameter":"Mass","specification":"0.553","tolerance":"","x":0,"y":0,"target_x":0,"target_y":0,"notes":"Title block"},
+  {"type":"surface_protection","parameter":"Surface Protection","specification":"As per TS12130","tolerance":"","x":0,"y":0,"target_x":0,"target_y":0,"notes":"Title block"},
+  {"type":"feature","parameter":"Dimn","specification":"(409)","tolerance":"","x":0,"y":0,"target_x":0,"target_y":0,"notes":""},
+  {"type":"feature","parameter":"Dimn","specification":"30±0.5","tolerance":"±0.5","x":0,"y":0,"target_x":0,"target_y":0,"notes":""},
+  {"type":"feature","parameter":"Dimn","specification":"379±0.5","tolerance":"±0.5","x":0,"y":0,"target_x":0,"target_y":0,"notes":""},
+  {"type":"feature","parameter":"Dimn","specification":"(17.5)","tolerance":"","x":0,"y":0,"target_x":0,"target_y":0,"notes":"Reference"},
+  {"type":"feature","parameter":"Hole","specification":"2 HOLES Ø8","tolerance":"","x":0,"y":0,"target_x":0,"target_y":0,"notes":""},
+  {"type":"feature","parameter":"Radius","specification":"R15(TYP)","tolerance":"","x":0,"y":0,"target_x":0,"target_y":0,"notes":""},
+  {"type":"feature","parameter":"Dimn","specification":"407","tolerance":"","x":0,"y":0,"target_x":0,"target_y":0,"notes":""},
+  {"type":"note","parameter":"NOTE:","specification":"GENERAL TOLERANCE TO BE MAINTAINED AS PER TS 12130m.","tolerance":"","x":0,"y":0,"target_x":0,"target_y":0,"notes":"Last entry"}
 ]
